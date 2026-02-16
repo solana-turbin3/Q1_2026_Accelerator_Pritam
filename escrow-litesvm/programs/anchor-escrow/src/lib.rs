@@ -3,8 +3,8 @@
 
 use anchor_lang::prelude::*;
 
-mod state;
 mod instructions;
+mod state;
 mod tests;
 
 use instructions::*;
@@ -24,7 +24,7 @@ pub mod anchor_escrow {
         ctx.accounts.refund_and_close_vault()
     }
 
-    pub fn take(ctx: Context<Take>) -> Result<()> {
+    pub fn take(ctx: Context<Take>, seed: u64) -> Result<()> {
         ctx.accounts.deposit()?;
         ctx.accounts.withdraw_and_close_vault()
     }

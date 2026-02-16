@@ -194,7 +194,6 @@ mod tests {
         assert_eq!(escrow_data.mint_b, mint_b);
         assert_eq!(escrow_data.receive, 10);
     }
-
     #[test]
     fn test_take() {
         let (mut program, payer) = setup();
@@ -208,6 +207,7 @@ mod tests {
             .airdrop(&taker.pubkey(), 10 * LAMPORTS_PER_SOL)
             .expect("Failed to airdrop SOL to taker");
 
+        // Create mints - maker is authority for both
         let mint_a = CreateMint::new(&mut program, &payer)
             .decimals(6)
             .authority(&maker)
@@ -222,6 +222,7 @@ mod tests {
             .unwrap();
         msg!("Mint B: {}\n", mint_b);
 
+        // Create maker's ATAs
         let maker_ata_a = CreateAssociatedTokenAccount::new(&mut program, &payer, &mint_a)
             .owner(&maker)
             .send()
@@ -234,6 +235,20 @@ mod tests {
             .unwrap();
         msg!("Maker ATA B: {}\n", maker_ata_b);
 
+        // Create taker's ATAs
+        let taker_ata_a = CreateAssociatedTokenAccount::new(&mut program, &payer, &mint_a)
+            .owner(&taker.pubkey())
+            .send()
+            .unwrap();
+        msg!("Taker ATA A: {}\n", taker_ata_a);
+
+        let taker_ata_b = CreateAssociatedTokenAccount::new(&mut program, &payer, &mint_b)
+            .owner(&taker.pubkey())
+            .send()
+            .unwrap();
+        msg!("Taker ATA B: {}\n", taker_ata_b);
+
+        // Derive escrow and vault PDAs
         let escrow = Pubkey::find_program_address(
             &[b"escrow", maker.as_ref(), &123u64.to_le_bytes()],
             &PROGRAM_ID,
@@ -242,16 +257,24 @@ mod tests {
         msg!("Escrow PDA: {}\n", escrow);
 
         let vault = associated_token::get_associated_token_address(&escrow, &mint_a);
-        msg!("Vault pda: {}\n", vault);
+        msg!("Vault PDA: {}\n", vault);
 
         let associated_token_program = spl_associated_token_account::ID;
         let token_program = TOKEN_PROGRAM_ID;
         let system_program = SYSTEM_PROGRAM_ID;
 
+        // Mint tokens to maker and taker
         MintTo::new(&mut program, &payer, &mint_a, &maker_ata_a, 1000000000)
             .send()
             .unwrap();
+        msg!("Minted tokens to maker ATA A\n");
 
+        MintTo::new(&mut program, &payer, &mint_b, &taker_ata_b, 1000000000)
+            .send()
+            .unwrap();
+        msg!("Minted tokens to taker ATA B\n");
+
+        // Execute Make instruction
         let make_ix = Instruction {
             program_id: PROGRAM_ID,
             accounts: crate::accounts::Make {
@@ -275,19 +298,18 @@ mod tests {
         };
 
         let message = Message::new(&[make_ix], Some(&payer.pubkey()));
-        let recent_blockhashes = program.latest_blockhash();
-
-        let transaction = Transaction::new(&[&payer], message, recent_blockhashes);
+        let recent_blockhash = program.latest_blockhash();
+        let transaction = Transaction::new(&[&payer], message, recent_blockhash);
 
         let tx = program.send_transaction(transaction).unwrap();
 
-        msg!("\n\nMake Transaction sucessfull");
+        msg!("\n\nMake Transaction successful");
         msg!("CUs Consumed: {}", tx.compute_units_consumed);
         msg!("TX Signature: {}", tx.signature);
 
+        // Verify Make instruction results
         let vault_account = program.get_account(&vault).unwrap();
         let vault_data = spl_token::state::Account::unpack(&vault_account.data).unwrap();
-
         assert_eq!(vault_data.amount, 10);
         assert_eq!(vault_data.owner, escrow);
         assert_eq!(vault_data.mint, mint_a);
@@ -301,20 +323,7 @@ mod tests {
         assert_eq!(escrow_data.mint_b, mint_b);
         assert_eq!(escrow_data.receive, 10);
 
-        let taker_ata_a = CreateAssociatedTokenAccount::new(&mut program, &payer, &mint_a)
-            .owner(&taker.pubkey())
-            .send()
-            .unwrap();
-
-        let taker_ata_b = CreateAssociatedTokenAccount::new(&mut program, &payer, &mint_b)
-            .owner(&taker.pubkey())
-            .send()
-            .unwrap();
-
-        MintTo::new(&mut program, &payer, &mint_b, &taker_ata_b, 1000000000)
-            .send()
-            .unwrap();
-
+        // Execute Take instruction
         let take_ix = Instruction {
             program_id: PROGRAM_ID,
             accounts: crate::accounts::Take {
@@ -322,34 +331,46 @@ mod tests {
                 maker: maker,
                 mint_a: mint_a,
                 mint_b: mint_b,
-                taker_ata_a,
-                taker_ata_b,
-                maker_ata_b,
-                escrow,
-                vault,
-                associated_token_program,
-                token_program,
-                system_program,
+                taker_ata_a: taker_ata_a,
+                taker_ata_b: taker_ata_b,
+                maker_ata_b: maker_ata_b,
+                escrow: escrow,
+                vault: vault,
+                token_program: token_program,
             }
             .to_account_metas(None),
-            data: crate::instruction::Take {}.data(),
+            data: crate::instruction::Take {
+                seed: 123u64, // Add seed parameter
+            }
+            .data(),
         };
 
         let message = Message::new(&[take_ix], Some(&taker.pubkey()));
-        let recent_blockhashes = program.latest_blockhash();
-        let transaction = Transaction::new(&[&taker], message, recent_blockhashes);
+        let recent_blockhash = program.latest_blockhash();
+        let transaction = Transaction::new(&[&taker], message, recent_blockhash);
 
         let tx = program.send_transaction(transaction).unwrap();
 
-        msg!("Take my Signature: {}", tx.signature);
+        msg!("\n\nTake Transaction successful");
+        msg!("CUs Consumed: {}", tx.compute_units_consumed);
+        msg!("TX Signature: {}", tx.signature);
 
+        // Verify Take instruction results
         let taker_ata_a_account = program.get_account(&taker_ata_a).unwrap();
         let taker_ata_a_data =
-            spl_token::state::Account::unpack(&taker_ata_a_account.data).unwrap(); // this one is confusing
-
+            spl_token::state::Account::unpack(&taker_ata_a_account.data).unwrap();
         assert_eq!(
             taker_ata_a_data.amount, 10,
-            "amount mismatch for taker ata a"
+            "Taker should have received 10 tokens of mint A"
+        );
+
+        let taker_ata_b_account = program.get_account(&taker_ata_b).unwrap();
+        let taker_ata_b_data =
+            spl_token::state::Account::unpack(&taker_ata_b_account.data).unwrap();
+        assert_eq!(
+            taker_ata_b_data.amount,
+            1000000000 - 10,
+            "Taker should have sent 10 tokens of mint B"
         );
 
         let maker_ata_b_account = program.get_account(&maker_ata_b).unwrap();
@@ -357,14 +378,27 @@ mod tests {
             spl_token::state::Account::unpack(&maker_ata_b_account.data).unwrap();
         assert_eq!(
             maker_ata_b_data.amount, 10,
-            "amount mismatch for maker ata b"
+            "Maker should have received 10 tokens of mint B"
         );
 
-        let vault_account = program.get_account(&vault).unwrap();
-
+        // Verify vault is closed
+        let vault_result = program.get_account(&vault);
         assert!(
-            vault_account.data.is_empty() && vault_account.lamports.eq(&0),
-            "vault account must be closed"
+            vault_result.is_none() || {
+                let vault_account = vault_result.unwrap();
+                vault_account.data.is_empty() && vault_account.lamports == 0
+            },
+            "Vault account should be closed"
+        );
+
+        // Verify escrow is closed
+        let escrow_result = program.get_account(&escrow);
+        assert!(
+            escrow_result.is_none() || {
+                let escrow_account = escrow_result.unwrap();
+                escrow_account.data.is_empty() && escrow_account.lamports == 0
+            },
+            "Escrow account should be closed"
         );
     }
 }
